@@ -1,10 +1,59 @@
-/*module "s3" {
-  source      = "./s3"
-  bucket_name = var.bucket_name
-  name        = var.name
-  environment = var.bucket_name
-}*/
+variable "bucket_name" {
+  type        = string
+  description = "Remote state bucket name"
+}
 
+variable "name" {
+  type        = string
+  description = "Tag name"
+}
+
+variable "environment" {
+  type        = string
+  description = "Environment name"
+}
+
+variable "vpc_cidr" {
+  type        = string
+  description = "Public Subnet CIDR values"
+}
+
+variable "vpc_name" {
+  type        = string
+  description = "DevOps Project 1 VPC 1"
+}
+
+variable "cidr_public_subnet" {
+  type        = list(string)
+  description = "Public Subnet CIDR values"
+}
+
+variable "cidr_private_subnet" {
+  type        = list(string)
+  description = "Private Subnet CIDR values"
+}
+
+variable "eu_availability_zone" {
+  type        = list(string)
+  description = "Availability Zones"
+}
+
+variable "public_key" {
+  type        = string
+  description = "DevOps Project 1 Public key for EC2 instance"
+}
+
+variable "ec2_ami_id" {
+  type        = string
+  description = "DevOps Project 1 AMI Id for EC2 instance"
+}
+
+variable "domain_name" {
+  type        = string
+  description = "Name of the domain"
+}
+
+# --- Networking ---
 module "networking" {
   source               = "./networking"
   vpc_cidr             = var.vpc_cidr
@@ -14,6 +63,7 @@ module "networking" {
   cidr_private_subnet  = var.cidr_private_subnet
 }
 
+# --- Security Groups ---
 module "security_group" {
   source                     = "./security-groups"
   ec2_sg_name                = "SG for EC2 to enable SSH(22) and HTTP(80)"
@@ -22,6 +72,19 @@ module "security_group" {
   ec2_sg_name_for_python_api = "SG for EC2 for enabling port 5000"
 }
 
+# --- RDS ---
+module "rds_db_instance" {
+  source               = "./rds"
+  db_subnet_group_name = "dev_proj_1_rds_subnet_group"
+  subnet_groups        = tolist(module.networking.dev_proj_1_public_subnets)
+  rds_mysql_sg_id      = module.security_group.rds_mysql_sg_id
+  mysql_db_identifier  = "mydb"
+  mysql_username       = "dbuser"
+  mysql_password       = "dbpassword"
+  mysql_dbname         = "devprojdb"
+}
+
+# --- EC2 (Python App) ---
 module "ec2" {
   source                   = "./ec2"
   ami_id                   = var.ec2_ami_id
@@ -32,9 +95,17 @@ module "ec2" {
   sg_enable_ssh_https      = module.security_group.sg_ec2_sg_ssh_http_id
   ec2_sg_name_for_python_api     = module.security_group.sg_ec2_for_python_api
   enable_public_ip_address = true
-  user_data_install_apache = templatefile("./template/ec2_install_apache.sh", {})
+
+  # 🔑 Pass DB details into user-data script
+  user_data_install_apache = templatefile("./template/ec2_install_python_app.sh", {
+    rds_endpoint = module.rds_db_instance.rds_endpoint
+    db_user      = "dbuser"
+    db_password  = "dbpassword"
+    db_name      = "devprojdb"
+  })
 }
 
+# --- Load Balancer Target Group ---
 module "lb_target_group" {
   source                   = "./load-balancer-target-group"
   lb_target_group_name     = "dev-proj-1-lb-target-group"
@@ -44,6 +115,7 @@ module "lb_target_group" {
   ec2_instance_id          = module.ec2.dev_proj_1_ec2_instance_id
 }
 
+# --- ALB ---
 module "alb" {
   source                    = "./load-balancer"
   lb_name                   = "dev-proj-1-alb"
@@ -63,6 +135,7 @@ module "alb" {
   lb_target_group_attachment_port = 5000
 }
 
+# --- Hosted Zone ---
 module "hosted_zone" {
   source          = "./hosted-zone"
   domain_name     = var.domain_name
@@ -70,19 +143,26 @@ module "hosted_zone" {
   aws_lb_zone_id  = module.alb.aws_lb_zone_id
 }
 
+# --- ACM ---
 module "aws_ceritification_manager" {
   source         = "./certificate-manager"
   domain_name    = var.domain_name
   hosted_zone_id = module.hosted_zone.hosted_zone_id
 }
 
-module "rds_db_instance" {
-  source               = "./rds"
-  db_subnet_group_name = "dev_proj_1_rds_subnet_group"
-  subnet_groups        = tolist(module.networking.dev_proj_1_public_subnets)
-  rds_mysql_sg_id      = module.security_group.rds_mysql_sg_id
-  mysql_db_identifier  = "mydb"
-  mysql_username       = "dbuser"
-  mysql_password       = "dbpassword"
-  mysql_dbname         = "devprojdb"
+# --- Outputs ---
+output "ec2_public_ip" {
+  value = module.ec2.dev_proj_1_ec2_public_ip
+}
+
+output "rds_endpoint" {
+  value = module.rds_db_instance.rds_endpoint
+}
+
+output "alb_dns_name" {
+  value = module.alb.aws_lb_dns_name
+}
+
+output "hosted_zone_id" {
+  value = module.hosted_zone.hosted_zone_id
 }
